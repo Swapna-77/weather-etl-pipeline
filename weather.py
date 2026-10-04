@@ -1,6 +1,7 @@
 import requests
 import logging
 import time
+import sqlite3
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +22,7 @@ PARAMS = {
 }
 
 MAX_ATTEMPTS = 3
-
+DB_PATH="weather.db"
 
 def extract():
     """Pull weather data from the API, retrying on failure."""
@@ -34,6 +35,7 @@ def extract():
             data = response.json()
 
             logging.info("Successfully fetched weather data")
+            logging.debug(data)
             return data
 
         except requests.exceptions.Timeout:
@@ -68,10 +70,43 @@ def transform(data):
         "wind_speed_unit": units["wind_speed_10m"],
     }
 
+def load(record):
+    connection=None
+    try:
+        connection=sqlite3.connect(DB_PATH)
+        cursor=connection.cursor()
+        cursor.execute("""CREATE TABLE IF NOT EXISTS weather (
+                time              TEXT PRIMARY KEY,
+                temperature       REAL,
+                temperature_unit  TEXT,
+                humidity          INTEGER,
+                wind_speed        REAL,
+                wind_speed_unit   TEXT,
+                loaded_at         TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""INSERT OR REPLACE INTO weather
+                (time, temperature, temperature_unit,
+                 humidity, wind_speed, wind_speed_unit)
+            VALUES(?,?,?,?,?,?)""",(record["time"],
+            record["temperature"],
+            record["temperature_unit"],
+            record["humidity"],
+            record["wind_speed"],
+            record["wind_speed_unit"],))
+        connection.commit()
+        logging.info(f"loaded record for {record['time']} into {DB_PATH}")
+        return True
+    except  sqlite3.Error as e:
+        logging.error(f"Database error: {e}")
+        return False
+    finally:
+        if connection:
+            connection.close()
 
 def main():
     logging.info("Pipeline started")
-
+    
     raw = extract()
 
     if raw is None:
@@ -80,6 +115,9 @@ def main():
 
     record = transform(raw)
     logging.info(f"Transformed record: {record}")
+    if not load(record):
+        logging.error("Pipeline failed: could not load record")
+        return
     logging.info("Pipeline finished successfully")
 
 
